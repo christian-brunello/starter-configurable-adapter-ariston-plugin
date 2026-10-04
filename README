@@ -1,0 +1,54 @@
+ariston-remotethermo — STCA plugin
+==================================
+
+Out-of-tree plugin for `starter-configurable-adapter` that talks to the
+Ariston Net / Remotethermo cloud. No on-disk state (cookies and caches
+are in-process only).
+
+1. Prerequisites
+----------------
+
+* starter-configurable-adapter (headers + library), installed or a local
+  build tree
+* GLib / GObject / GIO / GModule
+* libxml2, json-glib
+* libsoup 3.x or 2.4
+
+2. Build (against a local adapter tree)
+---------------------------------------
+
+From this directory, with the adapter already built as a sibling under
+`../../configurable-adapter` (paths relative to this plugin):
+
+    $ ./autogen.sh
+    $ ./configure --with-stca=../../configurable-adapter
+    $ make
+
+Or against an installed adapter:
+
+    $ ./configure
+    $ make
+    $ sudo make install
+
+3. Run
+------
+
+Edit `examples/ariston-remotethermo.stca.xml` (credentials), then:
+
+    $ LD_LIBRARY_PATH=../../configurable-adapter/lib/.libs \
+      ../../configurable-adapter/src/starter-configurable-adapter \
+        -c examples/ariston-remotethermo.stca.xml \
+        -p .libs
+
+4. Configuration
+----------------
+
+Required XML children: `host`, `user`, `password`, `gw`.
+
+Optional: `poll-interval` (default 60s), `metering-ttl` (2h),
+`features-ttl` / `session-ttl` (12h), `force`, `verbose`.
+
+5. License
+----------
+
+GNU General Public License version 3 or later. See COPYING.

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  STCA:Ariston Remotethermo — out-of-tree cloud plant plugin.
+
+  Build the adapter and this plugin, then (from this plugin directory):
+
+    LD_LIBRARY_PATH=../../configurable-adapter/lib/.libs \
+    ../../configurable-adapter/src/starter-configurable-adapter \
+      -c examples/ariston-remotethermo.stca.xml \
+      -p .libs
+
+  Fill in credentials below before running.
+-->
+<stca version="1">
+  <global>
+    <listen-address>127.0.0.1</listen-address>
+    <listen-port>8080</listen-port>
+    <adapter-name>STCA:Ariston</adapter-name>
+  </global>
+  <plugin name="ariston-remotethermo">
+    <host>https://www.chaffolink.remotethermo.com</host>
+    <user>YOUR_EMAIL</user>
+    <password>YOUR_PASSWORD</password>
+    <gw>YOUR_GATEWAY_ID</gw>
+    <poll-interval>60s</poll-interval>
+    <metering-ttl>2h</metering-ttl>
+  </plugin>
+</stca>
