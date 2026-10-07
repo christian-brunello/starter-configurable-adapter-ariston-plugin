@@ -5,6 +5,8 @@
 
 ACLOCAL_AMFLAGS = -I m4
 
+SUBDIRS = . doc
+
 plugindir = $(libdir)/starter/configurable-adapter/plugins
 plugin_LTLIBRARIES = ariston-remotethermo.la
 
@@ -30,3 +32,7 @@ exampledir = $(datadir)/starter/configurable-adapter/examples/ariston-remotether
 dist_example_DATA = examples/ariston-remotethermo.stca.xml
 
 EXTRA_DIST = README COPYING
+
+.PHONY: doc
+doc:
+	$(MAKE) $(AM_MAKEFLAGS) -C doc pdf

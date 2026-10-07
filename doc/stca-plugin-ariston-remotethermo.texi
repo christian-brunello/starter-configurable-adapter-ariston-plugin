@@ -1,0 +1,943 @@
+\input texinfo
+@c -*-texinfo-*-
+@setfilename stca-plugin-ariston-remotethermo.info
+@settitle STCA Ariston Remotethermo Plugin
+@include version.texi
+
+@paragraphindent 0
+
+@copying
+This manual is for stca-plugin-ariston-remotethermo (version @value{VERSION}),
+an out-of-tree plugin for starter-configurable-adapter.
+
+Copyright @copyright{} 2026 Christian Brunello
+
+@quotation
+Permission is granted to copy, distribute and/or modify this document
+under the terms of the GNU Free Documentation License, Version 1.3 or
+any later version published by the Free Software Foundation;
+with no Invariant Sections, no Front-Cover Texts, and no Back-Cover Texts.
+A copy of the license is included in the section entitled ``GNU Free
+Documentation License''.
+@end quotation
+@end copying
+
+@dircategory System Administration
+@direntry
+* STCA Ariston Remotethermo: (stca-plugin-ariston-remotethermo).  Ariston Net cloud plant for STCA.
+@end direntry
+
+@titlepage
+@title STCA Ariston Remotethermo Plugin
+@subtitle Version @value{VERSION}
+@subtitle Ariston Net / Remotethermo cloud plant for starter-configurable-adapter
+@author Christian Brunello
+@page
+@vskip 0pt plus 1filll
+@insertcopying
+@end titlepage
+
+@ifnottex
+@node Top
+@top STCA Ariston Remotethermo Plugin
+@insertcopying
+@end ifnottex
+
+@contents
+
+@menu
+* Introduction::
+* Concepts::
+* Building and Installing::
+* Running::
+* Configuration Reference::
+* Exposed Values::
+* Writable Keys::
+* Adapter HTTP Behaviour::
+* Examples Directory::
+* Ariston Cloud API Reference::
+* Copying::
+* GNU Free Documentation License::
+* GNU General Public License::
+@end menu
+
+@node Introduction
+@unnumbered Introduction
+
+@command{stca-plugin-ariston-remotethermo} is an out-of-tree plugin for
+@command{starter-configurable-adapter} (@acronym{STCA}). It connects to
+the Ariston Net / Remotethermo cloud, polls live plant data and metering
+statistics, and emits them as numeric values into the adapter store.
+
+A dedicated cloud thread owns the @acronym{HTTP} session (libsoup). The
+adapter main thread only schedules polls and emits batches. Session
+cookies and in-memory caches are process-local; there is no on-disk
+state.
+
+Writes for a small set of plant settings are accepted through the
+adapter @acronym{HTTP} @acronym{API} (@code{PUT /data/...}) and forwarded
+to the cloud on that same cloud thread.
+
+This manual describes how to build, configure, and operate the plugin.
+For the adapter itself, see the
+@cite{STARTER Configurable Adapter} manual
+(@file{starter-configurable-adapter.info}).
+
+@node Concepts
+@chapter Concepts
+
+@menu
+* Cloud Thread::
+* Polling and TTLs::
+* Live Versus Metering::
+* Data Flow::
+@end menu
+
+@node Cloud Thread
+@section Cloud Thread
+
+All cloud @acronym{I/O} runs on a GLib main loop in a worker thread named
+@code{ariston-cloud}. The adapter main loop:
+
+@itemize
+@item
+starts and joins that thread;
+@item
+fires a periodic timer at @code{poll-interval};
+@item
+invokes poll and write jobs onto the cloud context;
+@item
+emits successful poll batches via @code{stca_plugin_emit_data_ready}.
+@end itemize
+
+Poll jobs are coalesced: if a poll is already queued or in flight, a
+further request sets a ``wanted'' flag so one follow-up poll runs after
+the current one finishes.
+
+@node Polling and TTLs
+@section Polling and TTLs
+
+@table @code
+@item poll-interval
+How often the main thread schedules a cloud poll (default 60s). Live
+refresh freshness tracks this interval (@code{live_ttl} equals
+@code{poll-interval}).
+
+@item features-ttl / session-ttl
+How long cached plant features and login session metadata are considered
+fresh (default 12h each). Expired or missing caches trigger a new
+features fetch or login.
+
+@item metering-ttl
+How long metering snapshots are reused before another cloud metering
+request (default 2h).
+
+@item force
+When true, live and metering refreshes ignore @acronym{TTL} freshness
+(useful for debugging).
+@end table
+
+Duration values accept a bare number of milliseconds, or a number plus
+one of the suffixes @code{ms}, @code{s}, @code{m}, @code{h}, @code{d},
+@code{y}.
+
+@node Live Versus Metering
+@section Live Versus Metering
+
+Each successful poll:
+
+@enumerate
+@item
+Refreshes @emph{live} plant items from
+@code{/R2/PlantHome/GetData/...} when the live group is stale (or
+@code{force} is set). On refresh failure, a previously cached live
+snapshot is still served if one exists.
+@item
+Refreshes @emph{metering} best-effort when the metering group is stale.
+Metering failure never fails the whole poll if live data is available;
+a warning is logged and any cached metering values are kept.
+@item
+Copies every snapshot key into a @acronym{STCA} batch (string key to
+@code{STCAValue}).
+@end enumerate
+
+@node Data Flow
+@section Data Flow
+
+@example
+timer / write follow-up
+  → schedule poll (main)
+  → cloud thread: session + features + GetData (+ metering)
+  → in-memory snapshot
+  → idle emit on main thread
+  → STCA store
+  → GET /data (adapter HTTP)
+@end example
+
+A successful adapter write for a writable key:
+
+@example
+PUT /data/<key>
+  → plugin write_value (main waits)
+  → cloud thread: Refresh + Submit
+  → schedule poll
+@end example
+
+@node Building and Installing
+@chapter Building and Installing
+
+@menu
+* Prerequisites::
+* Build Against a Local Tree::
+* Build Against an Installed Adapter::
+* Building the Manual::
+@end menu
+
+@node Prerequisites
+@section Prerequisites
+
+@itemize
+@item
+@command{starter-configurable-adapter} headers and library (installed, or
+a local build tree)
+@item
+GLib / GObject / GIO / GModule
+@item
+libxml2, json-glib
+@item
+libsoup 3.x (preferred) or libsoup 2.4
+@item
+@command{makeinfo} (Texinfo) to build this manual
+@end itemize
+
+@node Build Against a Local Tree
+@section Build Against a Local Tree
+
+From the plugin source directory, with the adapter already built (paths
+relative to this plugin):
+
+@example
+$ ./autogen.sh
+$ ./configure --with-stca=../../configurable-adapter
+$ make
+@end example
+
+The shared module is produced as @file{.libs/ariston-remotethermo.so}.
+
+@node Build Against an Installed Adapter
+@section Build Against an Installed Adapter
+
+@example
+$ ./configure
+$ make
+$ sudo make install
+@end example
+
+The module is installed to
+@file{$(libdir)/starter/configurable-adapter/plugins/ariston-remotethermo.so}.
+The example configuration is installed under
+@file{$(datadir)/starter/configurable-adapter/examples/ariston-remotethermo/}.
+
+@node Building the Manual
+@section Building the Manual
+
+Info and related targets live under @file{doc/}:
+
+@example
+$ make -C doc info
+$ make doc          # PDF, if TeX tooling is available
+@end example
+
+@node Running
+@chapter Running
+
+Edit credentials in the example configuration, then load the plugin with
+the adapter @option{-p} / @option{--plugin-dir} and point @option{-c} at
+a configuration that selects
+@code{<plugin name="ariston-remotethermo">}:
+
+@example
+$ LD_LIBRARY_PATH=../../configurable-adapter/lib/.libs \
+    ../../configurable-adapter/src/starter-configurable-adapter \
+      -c examples/ariston-remotethermo.stca.xml \
+      -p .libs
+@end example
+
+By default the adapter prints @code{WARNING} / @code{CRITICAL} /
+@code{ERROR} only. For plugin diagnostics:
+
+@example
+$ G_MESSAGES_DEBUG=ariston-remotethermo \
+    LD_LIBRARY_PATH=../../configurable-adapter/lib/.libs \
+    ../../configurable-adapter/src/starter-configurable-adapter \
+      -c examples/ariston-remotethermo.stca.xml \
+      -p .libs
+@end example
+
+Or set @code{G_MESSAGES_DEBUG=all} for every log domain.
+
+@node Configuration Reference
+@chapter Configuration Reference
+
+Children of @code{<plugin name="ariston-remotethermo">} are opaque to the
+adapter and parsed only by this plugin.
+
+@menu
+* Required Options::
+* Optional Options::
+@end menu
+
+@node Required Options
+@section Required Options
+
+@table @code
+@item host
+Cloud base @acronym{URL} without a trailing slash
+(for example @code{https://www.chaffolink.remotethermo.com}).
+
+@item user
+Account email / username for cloud login.
+
+@item password
+Account password.
+
+@item gw
+Gateway / plant identifier used in cloud @acronym{URL} paths.
+@end table
+
+@node Optional Options
+@section Optional Options
+
+@table @code
+@item poll-interval
+Poll period (default @code{60s}). Also used as the live-data
+@acronym{TTL}.
+
+@item metering-ttl
+Metering cache lifetime (default @code{2h}).
+
+@item features-ttl
+Plant features cache lifetime (default @code{12h}).
+
+@item session-ttl
+Login / session metadata lifetime (default @code{12h}).
+
+@item force
+If true (or any value other than @code{0} / @code{false} / @code{no} /
+empty), ignore live and metering @acronym{TTL} freshness.
+
+@item verbose
+If true, enable more verbose libsoup / @acronym{HTTP} logging.
+@end table
+
+@node Exposed Values
+@chapter Exposed Values
+
+Keys come from two snapshot groups and are flattened into the adapter
+store under their cloud or derived names (no group prefix).
+
+@menu
+* Live Keys::
+* Metering Keys::
+@end menu
+
+@node Live Keys
+@section Live Keys
+
+Live keys are the @code{id} fields returned by the plant
+@code{GetData} response (zone, @acronym{DHW}, plant items, and so on).
+Their set depends on the plant features and filters used by the plugin.
+
+@code{PlantMode} is remapped for @acronym{STCA} numbering: cloud value
+@code{5} is exposed as @code{2}; writes reverse that mapping.
+
+@node Metering Keys
+@section Metering Keys
+
+For each known consumption kind the plugin may emit aggregates:
+
+@example
+Metering_ChTotal_Last2h / _Last48h / _Last7d / _LongTerm
+Metering_DhwTotal_...
+Metering_ChGas_...
+Metering_DhwGas_...
+Metering_ChElec_...
+Metering_DhwElec_...
+Metering_ChK24_...
+Metering_DhwK25_...
+@end example
+
+Which suffixes appear depends on the periods returned by the cloud
+(@code{p=1} → last 2h slot and 48h sum; @code{p=2} → 7 days;
+@code{p=4} → long-term). Unknown kind codes are ignored.
+
+@node Writable Keys
+@chapter Writable Keys
+
+Only these keys accept writes through the adapter
+(@code{access} includes @code{w}):
+
+@table @code
+@item ChFlowSetpointTemp
+Central-heating flow setpoint (cloud parameter @code{U6_3_0_0}).
+
+@item HybridMode
+Hybrid mode (cloud parameter @code{U6_12_1}).
+
+@item PlantMode
+Plant operating mode (cloud parameter @code{U3}).
+@acronym{STCA} values @code{0}, @code{1}, @code{2} map to cloud
+@code{0}, @code{1}, @code{5}.
+@end table
+
+Other keys are read-only. A write to an unknown or non-writable key
+fails with permission denied. After a successful write the plugin
+schedules a poll so the adapter store catches up.
+
+@node Adapter HTTP Behaviour
+@chapter Adapter HTTP Behaviour
+
+After emit, values appear on the adapter listen port as usual:
+
+@example
+$ curl http://127.0.0.1:8080/data
+$ curl http://127.0.0.1:8080/data/ChFlowSetpointTemp
+@end example
+
+Writable keys look like:
+
+@example
+"ChFlowSetpointTemp": @{ "value": 45.0, "access": "rw" @}
+@end example
+
+Read-only keys use @code{"access": "r"}.
+
+@example
+$ curl -X PUT http://127.0.0.1:8080/data/ChFlowSetpointTemp \
+    -H 'Content-Type: application/json' \
+    -d '46'
+@end example
+
+This plugin does not open a separate plugin @acronym{HTTP} server;
+all client access goes through the adapter @acronym{API}.
+
+@node Examples Directory
+@chapter Examples Directory
+
+@file{examples/ariston-remotethermo.stca.xml} configures the adapter on
+@code{127.0.0.1:8080} and points the plugin at the Chaffolink /
+Remotethermo host. Replace @code{YOUR_EMAIL}, @code{YOUR_PASSWORD}, and
+@code{YOUR_GATEWAY_ID} before running.
+
+@node Ariston Cloud API Reference
+@appendix Ariston Cloud API Reference
+
+This appendix documents the Ariston Net / Remotethermo cloud
+@acronym{HTTP} surface as understood by this plugin and by earlier
+Chaffolink / Ariston client work. It is @emph{not} an official Ariston
+specification: paths, bodies, and enums can change without notice.
+Where something is used by this plugin, that is marked explicitly;
+other endpoints and parameter codes are retained as field notes.
+
+@menu
+* API Overview and Hosts::
+* Client Headers and Cookies::
+* Auth Retry Policy::
+* Login Endpoint::
+* Plant Features Endpoint::
+* Live GetData Endpoint::
+* PlantMenu Refresh Endpoint::
+* PlantMenu Submit Endpoint::
+* Metering Sequences Endpoint::
+* Related Endpoints Not Used Here::
+* Symbolic Names and Cloud Parameter IDs::
+* Enum Remappings::
+* Metering Kind and Period Codes::
+@end menu
+
+@node API Overview and Hosts
+@section Overview and Hosts
+
+Two brand front-ends share the same Remotethermo backend family:
+
+@table @url
+@item https://www.chaffolink.remotethermo.com
+Chaffolink web client. This is the default @code{host} in the example
+configuration and the fixed @code{Origin} header sent by the plugin
+(@code{AR_DEFAULT_ORIGIN}, with trailing slash).
+
+@item https://www.ariston-net.remotethermo.com
+Ariston Net web client. Earlier tools sometimes called @acronym{API}
+paths on this host while still sending a Chaffolink @code{Origin}.
+The current plugin uses a single configurable @code{host} for all
+requests (no trailing slash after normalisation).
+@end table
+
+Paths fall into two families:
+
+@itemize
+@item
+Legacy @acronym{R2} @acronym{MVC}-style @acronym{AJAX}:
+@code{/R2/Account/...}, @code{/R2/PlantHome/...},
+@code{/R2/PlantMenu/...}, @code{/R2/PlantTimeProg/...}.
+@item
+Newer @acronym{REST}-ish @code{/api/v2/...} routes (features, metering
+reports, bus errors).
+@end itemize
+
+Gateway identifiers (@code{gw} / @code{gatewayId}) are opaque hex-like
+strings (for example @code{943CC6B5A3D0}). They appear in
+@acronym{URL} paths and, after the features call, are injected into the
+cached features @acronym{JSON} as @code{gatewayId}.
+
+@node Client Headers and Cookies
+@section Client Headers and Cookies
+
+The plugin mimics the official browser @acronym{XHR} client. Default
+request headers (see @code{ar_setup_headers}):
+
+@example
+Accept: application/json, text/javascript, */*; q=0.01
+Accept-Language: it-IT,it;q=0.8,en-US;q=0.5,en;q=0.3
+Accept-Encoding: gzip, deflate
+Connection: keep-alive
+Ajax-Request: json
+X-Requested-With: XMLHttpRequest
+Origin: https://www.chaffolink.remotethermo.com/
+Sec-Fetch-Dest: empty
+Sec-Fetch-Mode: cors
+Sec-Fetch-Site: same-origin
+Sec-Fetch-User: ?1
+@end example
+
+@acronym{JSON} bodies use
+@code{Content-Type: application/json; charset=utf-8}.
+
+Authentication is cookie-based (libsoup cookie jar). There is no
+@code{Authorization} header. A jar that only contains the
+@code{ar.loggedUser} profile cookie is @emph{not} treated as a usable
+session; other auth cookies must be present
+(@code{ar_http_has_usable_session}).
+
+Login sends @code{rememberMe: true}. Session cookies without
+@code{Expires}/@code{Max-Age} may be promoted to a finite max-age so a
+text jar could persist them; this plugin currently keeps the jar
+in-memory only.
+
+@node Auth Retry Policy
+@section Auth Retry Policy
+
+On @acronym{HTTP} status @code{401}, @code{403}, or @code{405}, the
+plugin invalidates the session / features / metering caches and retries
+the operation once after a forced login (see
+@code{ar_http_needs_relogin} and @code{ar_invalidate_auth_cache}).
+
+@node Login Endpoint
+@section Login (@code{POST /R2/Account/Login})
+
+@strong{Used by this plugin.}
+
+@example
+POST @{host@}/R2/Account/Login?returnUrl=%2FR2%2FHome
+Content-Type: application/json; charset=utf-8
+
+@{
+  "email": "<user>",
+  "password": "<password>",
+  "rememberMe": true,
+  "language": "Italian"
+@}
+@end example
+
+Expected response is a @acronym{JSON} object with boolean @code{ok}.
+Success requires @code{ok == true}; otherwise login is treated as
+rejected. Set-Cookie headers populate the jar for subsequent calls.
+
+@node Plant Features Endpoint
+@section Plant Features (@code{GET /api/v2/remote/plants/.../features})
+
+@strong{Used by this plugin.}
+
+@example
+GET @{host@}/api/v2/remote/plants/@{gw@}/features?eagerMode=True
+@end example
+
+Response: @acronym{JSON} object describing plant capabilities. The
+plugin injects @code{gatewayId} = @code{gw} into that object and
+caches the serialised form as @code{features_json}. That blob is later
+embedded verbatim inside the GetData request body.
+
+Cached under the in-memory @code{features} group with
+@code{features-ttl} (default 12h).
+
+@node Live GetData Endpoint
+@section Live Data (@code{POST /R2/PlantHome/GetData/...})
+
+@strong{Used by this plugin.}
+
+@example
+POST @{host@}/R2/PlantHome/GetData/@{gw@}?umsys=si
+Content-Type: application/json; charset=utf-8
+
+@{
+  "features": <features_json object>,
+  "filter": @{
+    "notEssentials": true,
+    "plant": true,
+    "zone": true,
+    "dhw": true,
+    "useCache": false,
+    "zone": 1
+  @}
+@}
+@end example
+
+Note that the filter object contains the key @code{zone} twice in the
+string built by the plugin (boolean @code{true} then integer
+@code{1}), matching the official web client request shape.
+
+Query flag @code{umsys=si} selects SI units.
+
+Response shape (abbreviated; real payloads include many more items):
+
+@example
+@{
+  "ok": true,
+  "data": @{
+    "features": null,
+    "timeProg": null,
+    "items": [
+      @{
+        "id": "ChFlowSetpointTemp",
+        "zone": 0,
+        "kind": 1,
+        "min": -3277.0,
+        "max": 3276.0,
+        "step": 1.0,
+        "value": 40.0,
+        "decimals": 0,
+        "options": null,
+        "optTexts": null,
+        "readOnly": true,
+        "error": false,
+        "invalid": false,
+        "expiresOn": null,
+        "unit": "°C"
+      @},
+      @{
+        "id": "PlantMode",
+        "zone": 0,
+        "kind": 2,
+        "value": 1.0,
+        "options": [0, 1, 5],
+        "optTexts": ["Estate", "Inverno", "OFF"],
+        "readOnly": false
+      @}
+    ],
+    "hasAdvancedSettings": true,
+    "hasDhw": true
+  @},
+  "redirectUrl": null,
+  "message": null,
+  "messageTitle": null,
+  "debugMessage": null,
+  "resultCode": null
+@}
+@end example
+
+The plugin stores only each item's @code{id} and numeric @code{value}
+into the live snapshot (after PlantMode remapping). Other metadata
+(@code{min}/@code{max}/@code{unit}/@code{readOnly}/@dots{}) is ignored
+at present.
+
+Typical live @code{id} values observed on hybrid plants include
+@code{ChFlowSetpointTemp}, @code{HeatingCircuitPressure},
+@code{PlantMode}, @code{AutomaticThermoregulation},
+@code{OutsideTemp}, @code{DhwMode}, @code{DhwTemp},
+@code{DhwTimeProgComfortTemp}, @code{DhwTimeProgEconomyTemp},
+@code{Holiday}, @code{HybridMode}, and zone / operating-mode items
+depending on features.
+
+@node PlantMenu Refresh Endpoint
+@section Parameter Refresh (@code{POST /R2/PlantMenu/Refresh})
+
+@strong{Used by this plugin} (before each Submit, to obtain
+@code{prevValue}).
+
+@example
+POST @{host@}/R2/PlantMenu/Refresh?id=@{gw@}&paramIds=@{U-code@}
+@end example
+
+Empty body. The official web client also uses @code{POST} (not
+@code{GET}). Optional query parameters seen in browser captures
+(@code{caller}, @code{rnd}) are not sent by this plugin.
+Multiple @code{paramIds} may be comma-separated in the web
+@acronym{UI}; the plugin requests one id at a time.
+
+Response:
+
+@example
+@{
+  "data": [
+    @{ "id": "U6_3_0_0", "value": 40.0 @}
+  ]
+@}
+@end example
+
+The first element's @code{value} is the cloud previous value used in
+Submit.
+
+@node PlantMenu Submit Endpoint
+@section Parameter Submit (@code{POST /R2/PlantMenu/Submit/...})
+
+@strong{Used by this plugin} for writable keys.
+
+@example
+POST @{host@}/R2/PlantMenu/Submit/@{gw@}?userActivity=SaveOtherSettings
+Content-Type: application/json; charset=utf-8
+
+[
+  @{
+    "id": "U6_3_0_0",
+    "value": "45",
+    "prevValue": 40
+  @}
+]
+@end example
+
+Formatting rules as implemented:
+
+@itemize
+@item
+@code{id} is the cloud parameter code (@code{U@dots{}}), not the
+symbolic GetData name.
+@item
+@code{value} is always a @emph{string} in the @acronym{JSON}.
+@item
+@code{prevValue} is a bare number (not a string).
+@item
+If either the new or previous value has a fractional part, both are
+formatted with two decimal places; otherwise both are integers.
+@end itemize
+
+Success requires a @acronym{JSON} object with @code{ok == true}. After
+success the plugin updates the live snapshot for the symbolic name and
+invalidates the live fetch timestamp so the next poll refreshes from
+the cloud.
+
+@node Metering Sequences Endpoint
+@section Metering (@code{GET .../consSequencesApi8})
+
+@strong{Used by this plugin.}
+
+@example
+GET @{host@}/api/v2/remote/reports/@{gw@}/consSequencesApi8\
+  ?usages=Ch%2CDhw&hasSlp=False&umSys=si
+Content-Type: application/json; charset=utf-8
+
+@{"useCache": false@}
+@end example
+
+Despite being a @code{GET}, the official client (and this plugin) send
+a small @acronym{JSON} body. Query flags request central-heating and
+@acronym{DHW} usages, no SLP, SI units.
+
+Response: a @acronym{JSON} @emph{array} of series objects:
+
+@example
+[
+  @{ "k": 7, "p": 1, "v": [ /* numbers */ ] @},
+  @{ "k": 7, "p": 2, "v": [ /* @dots{} */ ] @},
+  @{ "k": 10, "p": 4, "v": [ /* @dots{} */ ] @}
+]
+@end example
+
+@table @code
+@item k
+Consumption kind (see @ref{Metering Kind and Period Codes}).
+@item p
+Period / bucket scheme.
+@item v
+Array of samples for that kind and period.
+@end table
+
+Aggregation performed by the plugin:
+
+@table @code
+@item p = 1
+Twenty-four 2-hour slots (~48h). Emits
+@code{@{prefix@}_Last2h} = last sample and
+@code{@{prefix@}_Last48h} = sum of all samples.
+@item p = 2
+Seven daily buckets. Emits @code{@{prefix@}_Last7d} = sum.
+@item p = 4
+Long-term buckets. Emits @code{@{prefix@}_LongTerm} = sum.
+@end table
+
+Unknown @code{k} values are ignored. Metering failures are logged; a
+prior cache may still be served.
+
+@node Related Endpoints Not Used Here
+@section Related Endpoints (Not Used by This Plugin)
+
+Documented from earlier Chaffolink / Ariston client work for
+completeness. Behaviour should be re-verified before relying on them.
+
+@subsection Bus Errors
+
+@example
+GET @{host@}/api/v2/busErrors?gatewayId=@{gw@}&blockingOnly=False&culture=en-US
+@end example
+
+Response: @acronym{JSON} array of fault objects, for example:
+
+@example
+@{
+  "gw": "F0AD4E0590BD",
+  "timestamp": "2022-07-14T10:55:04",
+  "fault": 45,
+  "mult": 0,
+  "code": "501",
+  "pri": 1053500,
+  "errDex": "No flame detected",
+  "res": false,
+  "blk": true
+@}
+@end example
+
+@subsection Heating Time Program
+
+@example
+POST @{host@}/R2/PlantTimeProg/SetTimeProg/@{gw@}?umsys=si
+Content-Type: application/json; charset=utf-8
+@end example
+
+Body embeds @code{progId}, a @code{weeklyPlan} with per-day
+@code{slices} of @code{@{ "from": <minutes-from-midnight>, "temp": 0|1 @}},
+and the cached @code{features} object. Used historically to push
+predefined heating schedules; not wired in this plugin.
+
+@node Symbolic Names and Cloud Parameter IDs
+@section Symbolic Names and Cloud Parameter IDs
+
+GetData exposes human-readable @code{id} strings. PlantMenu Submit /
+Refresh use opaque @code{U@dots{}} codes. Mapping known from this
+plugin and prior clients:
+
+@multitable @columnfractions .38 .22 .40
+@headitem Symbolic name @tab Cloud id @tab Notes
+@item @code{ChFlowSetpointTemp}
+@tab @code{U6_3_0_0}
+@tab Writable in this plugin. CH flow setpoint (°C).
+@item @code{HybridMode}
+@tab @code{U6_12_1}
+@tab Writable in this plugin. 0 Auto / 1 Boiler / 2 HP only.
+@item @code{PlantMode}
+@tab @code{U3}
+@tab Writable in this plugin. See @ref{Enum Remappings}.
+@item @code{AutomaticThermoregulation}
+@tab @code{U6_3_3}
+@tab Climatic / weather compensation on/off. Not writable here.
+@item @code{DhwMode}
+@tab @code{U6_9_2}
+@tab 0 off / 1 timed / 2 always on. Not writable here.
+@item @code{DhwTemp}
+@tab @code{U6_9_0}
+@tab DHW setpoint. Not writable here.
+@item @code{DhwTimeProgEconomyTemp}
+@tab @code{U6_9_1_0_1}
+@tab Economy slot setpoint. Not writable here.
+@item @code{IsQuite} (Quiet)
+@tab @code{U6_15_0_1}
+@tab Quiet / silent mode. Not writable here.
+@item @code{HybridTankChargeMode}
+@tab @code{U6_9_3}
+@tab Tank charge strategy. Not writable here.
+@item @code{OperatingMode} (zone)
+@tab @code{U0_0}
+@tab Zone control strategy; remapped historically. Not writable here.
+@end multitable
+
+Browser captures have also used multi-id Refresh queries such as
+@code{paramIds=U6_3_0_0,U6_3_0_2,U6_3_0_4} (related CH curve / offset
+parameters); those extra codes are not yet mapped in this plugin.
+
+@node Enum Remappings
+@section Enum Remappings
+
+Some cloud enums do not match the numbering used on the STARTER /
+@acronym{STCA} side. The plugin remaps @strong{PlantMode} only:
+
+@multitable @columnfractions .35 .30 .35
+@headitem Meaning @tab Cloud @code{PlantMode} @tab @acronym{STCA} value
+@item Summer (Estate) @tab 0 @tab 0
+@item Winter (Inverno) @tab 1 @tab 1
+@item Off @tab 5 @tab 2
+@end multitable
+
+Web @code{optTexts} for PlantMode are typically
+@code{["Estate","Inverno","OFF"]} with @code{options: [0,1,5]}.
+
+Historical (not applied by this plugin) zone @strong{OperatingMode}
+mapping used by the older Chaffolink service:
+
+@multitable @columnfractions .40 .30 .30
+@headitem Meaning @tab Cloud @code{U0_0} @tab ST-side value
+@item Off @tab 0 @tab 0
+@item Manual @tab 2 @tab 1
+@item Programmed / scheduled @tab 3 @tab 2
+@end multitable
+
+@node Metering Kind and Period Codes
+@section Metering Kind and Period Codes
+
+@code{k} values recognised by this plugin (aligned with
+@code{ConsumptionType} from @code{python-ariston-api}, plus provisional
+portal codes):
+
+@multitable @columnfractions .12 .40 .48
+@headitem @code{k} @tab Snapshot prefix @tab Meaning (best known)
+@item 1 @tab @code{Metering_ChTotal} @tab CH total energy
+@item 2 @tab @code{Metering_DhwTotal} @tab DHW total energy
+@item 7 @tab @code{Metering_ChGas} @tab CH gas (kWh-equivalent)
+@item 10 @tab @code{Metering_DhwGas} @tab DHW gas
+@item 20 @tab @code{Metering_ChElec} @tab CH electricity
+@item 21 @tab @code{Metering_DhwElec} @tab DHW electricity
+@item 24 @tab @code{Metering_ChK24} @tab Provisional; seen on web portal
+@item 25 @tab @code{Metering_DhwK25} @tab Provisional; seen on web portal
+@end multitable
+
+Period @code{p}:
+
+@table @code
+@item 1
+2-hour samples (24 points ≈ 48h window).
+@item 2
+Daily samples (7 points ≈ one week).
+@item 4
+Longer / long-term buckets.
+@end table
+
+Units follow @code{umSys=si} (energy series treated as kWh-scale
+aggregates in downstream tooling). Exact cloud semantics for
+@code{k=24}/@code{25} remain provisional.
+
+@node Copying
+@appendix Copying
+
+This plugin is distributed under the GNU General Public License
+version 3 or later. See @file{COPYING} in the source tree and the
+appendix @ref{GNU General Public License}.
+
+This manual is released under the GNU Free Documentation License
+version 1.3 or later; see @ref{GNU Free Documentation License}.
+
+@node GNU Free Documentation License
+@appendix GNU Free Documentation License
+@include fdl.texi
+
+@node GNU General Public License
+@appendix GNU General Public License
+@include gpl.texi
+
+@bye

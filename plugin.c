@@ -261,7 +261,9 @@ ar_cloud_run_poll(gpointer user_data)
   if (again)
     stca_ariston_schedule_poll(self);
 
-  g_object_unref(self);
+  /* Do not unref here: user_data is owned by g_main_context_invoke_full's
+   * destroy notify (g_object_unref). An extra unref here dropped the last
+   * ref when the idle freed result->self, leaving context->plugin dangling. */
   return G_SOURCE_REMOVE;
 }
 

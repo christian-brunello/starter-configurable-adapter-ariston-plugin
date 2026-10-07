@@ -51,7 +51,15 @@ PLUGIN_LIBS="$STCA_LIBS $JSON_GLIB_LIBS $LIBSOUP_LIBS"
 AC_SUBST(PLUGIN_CFLAGS)
 AC_SUBST(PLUGIN_LIBS)
 
-AC_CONFIG_FILES([Makefile])
+AC_PATH_TOOL([MAKEINFO], [makeinfo], [:])
+if test "$MAKEINFO" = ":" ; then
+    AC_MSG_ERROR([makeinfo not found. Please install it and try again.])
+fi
+
+AC_CONFIG_FILES([
+  Makefile
+  doc/Makefile
+])
 AC_OUTPUT
 
 AS_IF([test "$have_libsoup3" = "yes"],

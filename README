@@ -30,6 +30,12 @@ Or against an installed adapter:
     $ make
     $ sudo make install
 
+Texinfo manual (requires `makeinfo`):
+
+    $ make -C doc info
+    $ info ./doc/stca-plugin-ariston-remotethermo.info
+    $ make doc          # PDF, if TeX tooling is available
+
 3. Run
 ------
 
@@ -40,6 +46,17 @@ Edit `examples/ariston-remotethermo.stca.xml` (credentials), then:
         -c examples/ariston-remotethermo.stca.xml \
         -p .libs
 
+By default the adapter prints WARNING / CRITICAL / ERROR only (same
+policy as configurable-service). For INFO/DEBUG of this plugin:
+
+    $ G_MESSAGES_DEBUG=ariston-remotethermo \
+      LD_LIBRARY_PATH=../../configurable-adapter/lib/.libs \
+      ../../configurable-adapter/src/starter-configurable-adapter \
+        -c examples/ariston-remotethermo.stca.xml \
+        -p .libs
+
+Or `G_MESSAGES_DEBUG=all` for every domain.
+
 4. Configuration
 ----------------
 
@@ -48,7 +65,15 @@ Required XML children: `host`, `user`, `password`, `gw`.
 Optional: `poll-interval` (default 60s), `metering-ttl` (2h),
 `features-ttl` / `session-ttl` (12h), `force`, `verbose`.
 
-5. License
+Writable adapter keys: `ChFlowSetpointTemp`, `HybridMode`, `PlantMode`.
+
+5. Documentation
+----------------
+
+See `doc/stca-plugin-ariston-remotethermo.texi` (built as Info/PDF). The
+README is a short quick-start; the Texinfo manual is the reference.
+
+6. License
 ----------
 
 GNU General Public License version 3 or later. See COPYING.
